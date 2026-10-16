@@ -29,7 +29,8 @@ button:disabled { opacity:.45; }
 canvas#preview { display:block; max-width:100%; background:#000; border:1px solid #333; margin:8px auto; }
 .warn { color:var(--warn); } .bad { color:var(--bad); } .small { font-size:13px; color:#aaa; }
 nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:#000; padding-bottom:env(safe-area-inset-bottom); border-top:1px solid #222; }
-nav button { flex:1; border-radius:0; background:none; min-height:56px; }
+nav button { flex:1; border-radius:0; background:none; min-height:64px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:12px; }
+nav svg { width:24px; height:24px; fill:none; stroke:currentColor; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
 nav button[aria-selected=true] { color:var(--accent); font-weight:600; }
 progress { width:100%; }
 ul.list { list-style:none; padding:0; margin:0; }

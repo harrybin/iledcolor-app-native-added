@@ -40,6 +40,14 @@ export class GreetingUi {
     $('view-scan').innerHTML = `
       <div class="card">
         <h2>QR greeting</h2>
+        <div class="row scan-actions">
+          <button id="qr-start" class="primary">Scan QR code</button>
+          <button id="qr-stop" hidden>Stop camera</button>
+          <button id="qr-cancel" hidden>End greeting</button>
+        </div>
+        <video id="qr-video" playsinline muted hidden aria-label="QR camera preview"></video>
+        <p id="qr-status" role="status" aria-live="polite"></p>
+        <p id="qr-error" class="bad" role="alert"></p>
         <p class="small">Scan a badge to greet its owner on this phone's primary cap. Other caps keep playing.
         Send content to the cap first so it can be restored afterwards.</p>
         <label for="qr-profile">Saved QR profile</label>
@@ -64,14 +72,6 @@ export class GreetingUi {
         <input id="qr-repetitions" type="number" min="1" max="65536" step="1" />
         <label for="qr-speed">Scroll speed</label>
         <input id="qr-speed" type="range" min="1" max="10" step="1" />
-        <div class="row">
-          <button id="qr-start" class="primary">Scan QR code</button>
-          <button id="qr-stop" hidden>Stop camera</button>
-          <button id="qr-cancel" hidden>End greeting</button>
-        </div>
-        <video id="qr-video" playsinline muted hidden aria-label="QR camera preview"></video>
-        <p id="qr-status" role="status" aria-live="polite"></p>
-        <p id="qr-error" class="bad" role="alert"></p>
         <label><input id="qr-log-enabled" type="checkbox" /> Save all scanned data to a local file</label>
         <p class="small">Off by default. When enabled, logs complete QR payloads (including failed greetings and manual entries),
         timestamps and profile notes in qr-scan-log.jsonl. This may include personal data.

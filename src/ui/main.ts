@@ -133,6 +133,15 @@ function renderConnect() {
       <p class="small">Close other controller apps first. Android will ask for Bluetooth permission the first time you connect.</p>
       <p class="small" id="install-help" hidden>To install: Chrome menu → Install app / Add to Home screen.</p>
     </div>
+    <div id="content-editor"></div>`;
+  $('#btn-connect').onclick = onConnect;
+  $('#btn-disconnect').onclick = () => (sharedCap() ? disconnectPrimary() : controller.disconnect());
+  renderStatus();
+}
+
+function renderDeviceSettings() {
+  const root = $('#settings-device');
+  root.innerHTML = `
     <div class="card">
       <h2>Display</h2>
       <label for="brightness">Dimming level: <b id="bval">${settings.brightness}</b> (0 = brightest, 10 = dimmest) <span id="bstate" class="small">${esc(brightnessNote)}</span></label>
@@ -163,10 +172,8 @@ function renderConnect() {
       <p class="small">Chunk size and delay apply on the next connection. Only raise them after testing on the hat.</p>
     </div>`;
 
-  $('#btn-connect').onclick = onConnect;
   $('#btn-copylog').onclick = () => navigator.clipboard?.writeText(traceLog.join('\n'));
   $('#btn-clearlog').onclick = () => { traceLog.length = 0; $('#trace').textContent = ''; };
-  $('#btn-disconnect').onclick = () => (sharedCap() ? disconnectPrimary() : controller.disconnect());
   $('#btn-test-color').onclick = () => sendImage(solid(settings.width, settings.height, [255, 0, 0]));
   $('#btn-test-corner').onclick = () => sendImage(physical(cornerTest(...logicalDims())));
   $('#btn-disp-on').onclick = () => control('display', () => controller.setDisplay(true), (n) => (displayNote = n), 'dstate', 'On');
@@ -256,8 +263,9 @@ function logicalDims(): [number, number] {
 function physical(img: RgbImage): RgbImage { return transformImage(img, settings.transform); }
 
 function renderCreate() {
-  $('#view-create').innerHTML = `
+  $('#content-editor').innerHTML = `
     <div class="card">
+      <h2>Create content</h2>
       <label for="c-kind">Content</label>
       <select id="c-kind"><option value="text">Text</option><option value="solid">Solid color</option><option value="image">Image (PNG/JPEG/GIF)</option></select>
       <div id="c-text">
@@ -312,7 +320,7 @@ function syncKind() {
 
 function currentContent(): Content {
   if (!document.getElementById('c-kind')) {
-    if (!savedCreateContent) throw new Error('Choose content on the Create tab first.');
+    if (!savedCreateContent) throw new Error('Choose content on the Connect tab first.');
     return savedCreateContent;
   }
   const k = $<HTMLSelectElement>('#c-kind').value;
@@ -358,7 +366,7 @@ async function refreshPreview(content?: Content) {
     if (seq !== renderSeq) return;
     savedCreateContent = selected;
     createContentChanged();
-    void saveKv('createContent', selected).catch((e) => { $('#c-err').textContent = `Could not save Create content: ${(e as Error).message}`; });
+    void saveKv('createContent', selected).catch((e) => { $('#c-err').textContent = `Could not save Connect content: ${(e as Error).message}`; });
     lastImage = image;
     lastFrames = frames ?? null;
     lastDelays = delays ?? [];
@@ -432,7 +440,7 @@ async function savePresetClick() {
 // ---------- Presets view ---------------------------------------------------------
 
 async function renderPresets() {
-  const root = $('#view-presets');
+  const root = $('#settings-presets');
   let presets: Preset[] = [];
   let err = '';
   try { presets = await listPresets(); } catch (e) { err = (e as Error).message; }
@@ -457,7 +465,7 @@ async function renderPresets() {
     try {
       const { image } = await renderContent(p.content);
       lastImage = image;
-      showTab('create');
+      showTab('connect');
       setCreateFrom(p.content);
       await refreshPreview(p.content);
     } catch (e) { $('#p-msg').textContent = (e as Error).message; }
@@ -482,6 +490,8 @@ async function renderPresets() {
       settings = data.settings;
       await saveSettings(settings);
       await scanner?.importProfiles(data.qrProfiles);
+      renderDeviceSettings();
+      await refreshPreview();
       await renderPresets();
       $('#p-msg').textContent = `Imported ${data.presets.length} presets and ${data.qrProfiles.profiles.length} QR profiles. Restart the connection to apply transport settings.`;
     } catch (e) { $('#p-msg').textContent = `Import failed: ${(e as Error).message}`; }
@@ -501,11 +511,16 @@ function setCreateFrom(c: Content) {
 // ---------- tabs, offline, install, updates ---------------------------------------
 
 function showTab(name: string) {
-  document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
-  for (const v of ['connect', 'create', 'presets', 'approach', 'scan']) $(`#view-${v}`).hidden = v !== name;
+  document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => {
+    const selected = b.dataset.tab === name;
+    b.setAttribute('aria-selected', String(selected));
+    b.tabIndex = selected ? 0 : -1;
+  });
+  for (const v of ['connect', 'approach', 'scan', 'settings']) $(`#view-${v}`).hidden = v !== name;
   if (name !== 'scan') scanner?.stopCamera();
-  if (name === 'presets') void renderPresets();
+  if (name === 'settings') void renderPresets();
   if (name === 'approach') renderApproach();
+  window.scrollTo(0, 0);
 }
 
 function setupPwa() {
@@ -561,13 +576,26 @@ async function main() {
   try {
     const saved = await loadKv('createContent');
     if (saved !== undefined) savedCreateContent = validateContent(saved);
-  } catch (e) { banner(`<b>Could not restore Create content:</b> ${esc((e as Error).message)}`); }
+  } catch (e) { banner(`<b>Could not restore Connect content:</b> ${esc((e as Error).message)}`); }
   await initApproach(approachContext());
   renderConnect();
+  renderDeviceSettings();
   renderCreate();
   scanner = new GreetingUi({ controller: () => controller, logicalDims, physical, marqueeDelay });
   await scanner.init();
   document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab!)));
+  $('tab-bar').onkeydown = (event) => {
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>('nav button')];
+    const index = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    showTab(tabs[next]!.dataset.tab!);
+    tabs[next]!.focus();
+  };
   setupPwa();
   void requestPersistence();
 }
