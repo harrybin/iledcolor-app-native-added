@@ -13,6 +13,43 @@ test('stable versions map to increasing native build numbers', () => {
   assert.deepEqual([...builds].sort((a, b) => a - b), builds);
 });
 
+test('Android publishing creates missing tags at the validated build commit', (t) => {
+  const workflow = readFileSync(new URL('../.github/workflows/release-android.yml', import.meta.url), 'utf8');
+  assert.ok(workflow.includes('commit: ${{ steps.version.outputs.commit }}'));
+  assert.ok(workflow.includes('echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"'));
+  assert.ok(workflow.includes('RELEASE_COMMIT: ${{ needs.android.outputs.commit }}'));
+  const publication = workflow.split('      - name: Publish Android app with checksums\n')[1];
+  assert.ok(publication);
+  const script = publication.split('        run: |\n')[1].replace(/^          /gm, '');
+  const root = mkdtempSync(join(tmpdir(), 'led-hat-release-publish-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'led-hat-v0.2.0-android.apk'), 'test artifact');
+  for (const exists of [false, true]) {
+    const result = spawnSync('bash', ['-c', `
+      gh() {
+        printf '%s\\n' "$*"
+        if [[ "$1 $2" == "release view" ]]; then
+          return "$RELEASE_STATUS"
+        fi
+        if [[ "$1 $2" == "release create" ]]; then
+          [[ "$3 $4 $5 $6" == "v0.2.0 --target built-commit-sha --draft" ]] || exit 99
+        fi
+      }
+      ${script}
+    `], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, RELEASE_TAG: 'v0.2.0', RELEASE_COMMIT: 'built-commit-sha',
+        RELEASE_STATUS: exists ? '0' : '1' },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.includes('release create'), !exists);
+    assert.match(result.stdout, /release upload v0.2.0 led-hat-v0.2.0-android.apk SHA256SUMS-android.txt --clobber/);
+    assert.match(result.stdout, /release edit v0.2.0 --draft=false --latest/);
+    assert.match(readFileSync(join(root, 'SHA256SUMS-android.txt'), 'utf8'), /^[a-f0-9]{64}  led-hat-v0.2.0-android.apk\n$/);
+  }
+});
+
 test('rejects versions unsupported by native release metadata', () => {
   for (const version of ['1.0', '01.2.3', 'v1.2.3', '1.2.3-beta.1', '1.2.3+1', '-1.0.0',
     '1.1000.0', '1.0.1000', '2100.0.0', '999999999999999999.0.0', '', null]) {
@@ -80,35 +117,42 @@ test('Android manual releases normalize and validate the tag before checkout', (
   assert.ok(validation[1].includes("if: github.event_name == 'workflow_dispatch'"));
   assert.ok(validation[1].includes('RELEASE_TAG: ${{ inputs.tag }}'));
   assert.ok(validation[1].includes('GH_TOKEN: ${{ github.token }}'));
+  assert.ok(validation[1].includes('RELEASE_COMMIT: ${{ github.sha }}'));
   assert.ok(validation[1].includes('id: release_tag'));
-  assert.ok(workflow.includes("ref: ${{ steps.release_tag.outputs.tag && format('refs/tags/{0}', steps.release_tag.outputs.tag) || github.ref }}"));
+  assert.ok(workflow.includes('ref: ${{ steps.release_tag.outputs.ref || github.ref }}'));
   assert.ok(workflow.includes('RELEASE_TAG: ${{ steps.release_tag.outputs.tag || github.ref_name }}'));
   const script = validation[1].split('        run: |\n')[1].replace(/^          /gm, '');
   const root = mkdtempSync(join(tmpdir(), 'led-hat-release-tag-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const output = join(root, 'output');
-  const run = (tag, exists) => {
+  const run = (tag, exists, apiStatus = 0) => {
     writeFileSync(output, '');
     return spawnSync('bash', ['-c', `
     gh() {
-      printf 'API request: %s\\n' "$*"
-      [[ "$*" == "api --silent repos/example/app/git/ref/tags/v0.2.0" ]] || exit 99
-      return "$TAG_STATUS"
+      printf 'API request: %s\\n' "$*" >&2
+      [[ "$1 $2" == "api repos/example/app/git/matching-refs/tags/v0.2.0" ]] || exit 99
+      [[ "$3" == "--jq" ]] || exit 99
+      [[ "$4" == '.[] | select(.ref == "refs/tags/v0.2.0") | .ref' ]] || exit 99
+      if [[ "$TAG_EXISTS" == "true" ]]; then
+        printf 'refs/tags/v0.2.0\\n'
+      fi
+      return "$API_STATUS"
     }
     ${script}
   `], {
     encoding: 'utf8',
     env: { ...process.env, RELEASE_TAG: tag, GITHUB_REPOSITORY: 'example/app',
-      GITHUB_OUTPUT: output, TAG_STATUS: exists ? '0' : '1' },
+      GITHUB_OUTPUT: output, TAG_EXISTS: String(exists), API_STATUS: String(apiStatus),
+      RELEASE_COMMIT: 'selected-commit-sha' },
   });
   };
   for (const tag of ['0.2.0', 'v0.2.0']) {
     assert.equal(run(tag, true).status, 0, tag);
-    assert.equal(readFileSync(output, 'utf8'), 'tag=v0.2.0\n');
+    assert.equal(readFileSync(output, 'utf8'), 'tag=v0.2.0\nref=refs/tags/v0.2.0\n');
     const missing = run(tag, false);
-    assert.equal(missing.status, 1);
-    assert.match(missing.stdout, /Cannot find release tag v0.2.0/);
-    assert.match(missing.stdout, /Create and push it from the release commit/);
+    assert.equal(missing.status, 0);
+    assert.equal(readFileSync(output, 'utf8'), 'tag=v0.2.0\nref=selected-commit-sha\n');
+    assert.equal(run(tag, false, 1).status, 1, 'API failures must not fall back to a new tag');
     assert.equal(readFileSync(output, 'utf8'), '');
   }
   for (const tag of ['', 'main', '01.2.3', 'v01.2.3', 'vv1.2.3', 'v1.2.3-beta.1',
@@ -116,7 +160,7 @@ test('Android manual releases normalize and validate the tag before checkout', (
     const invalid = run(tag, true);
     assert.equal(invalid.status, 1, tag);
     assert.match(invalid.stdout, /Release must use MAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH/);
-    assert.ok(!invalid.stdout.includes('API request:'), 'invalid tags must not reach the API');
+    assert.ok(!invalid.stderr.includes('API request:'), 'invalid tags must not reach the API');
     assert.equal(readFileSync(output, 'utf8'), '');
   }
 });
