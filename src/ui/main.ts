@@ -29,6 +29,7 @@ let controller: DeviceController;
 let deviceName = '';
 const native = isNativeApp();
 let useMock = location.hash === '#mock'; // dev/test only: in-memory hat
+const approachAvailable = native || useMock;
 let lastImage: RgbImage | null = null; // retained across disconnects
 let lastFrames: RgbImage[] | null = null; // set when the content is a marquee
 let lastDelays: number[] = [];
@@ -37,6 +38,7 @@ let previewTimer: ReturnType<typeof setTimeout> | undefined;
 const marqueeDelay = (speed: number) => Math.round(220 / speed);
 let sendNote = '';
 let brightnessNote = '';
+let brightnessTimer: ReturnType<typeof setTimeout> | undefined;
 let displayNote = '';
 let imageDataUrl = '';
 let renderSeq = 0;
@@ -101,6 +103,10 @@ function updateButtons() {
   set('btn-connect', busy || ready || controller.temporaryActive);
   set('btn-disconnect', s === 'Disconnected');
   set('btn-send', !ready || !lastImage);
+  const help = document.getElementById('send-help');
+  if (help) help.textContent = controller.temporaryActive ? 'Wait for the QR greeting to finish before sending.'
+    : !ready ? 'Connect your hat above to send content. You can edit and preview offline.'
+    : !lastImage ? 'Choose valid content to enable sending.' : 'Preview ready. Send it to your connected hat.';
   set('btn-test-color', !ready); set('btn-test-corner', !ready);
   set('btn-disp-on', !ready); set('btn-disp-off', !ready);
   set('brightness', !ready);
@@ -134,9 +140,19 @@ function renderConnect() {
         <button id="btn-install" hidden>Install app</button>
       </div>
       <p id="conn-msg" class="small"></p>
-      <p class="small">Close other controller apps first. Android will ask for Bluetooth permission the first time you connect.</p>
-      <p class="small" id="install-help" hidden>To install: Chrome menu → Install app / Add to Home screen.</p>
+      <p class="small">Close other controller apps first. ${native ? `${platformName() === 'ios' ? 'iOS' : 'Android'} will ask for Bluetooth permission the first time you connect.` : 'Choose your hat in the browser Bluetooth picker. Connecting requires Web Bluetooth; editing and presets work offline.'}</p>
+      <p class="small" id="install-help" hidden>To install: use your browser's Install app or Add to Home Screen option (in Safari, open the Share menu).</p>
     </div>
+    <div id="content-editor"></div>`;
+  $('#btn-connect').onclick = onConnect;
+  $('#btn-disconnect').onclick = () => (sharedCap() ? disconnectPrimary() : controller.disconnect());
+  renderStatus();
+}
+
+function renderDeviceSettings() {
+  clearTimeout(brightnessTimer);
+  const root = $('#settings-device');
+  root.innerHTML = `
     <div class="card">
       <h2>Display</h2>
       <label for="brightness">Dimming level: <b id="bval">${settings.brightness}</b> (0 = brightest, 10 = dimmest) <span id="bstate" class="small">${esc(brightnessNote)}</span></label>
@@ -144,47 +160,44 @@ function renderConnect() {
       <p class="small">Mapping and "dimmest ≠ off" are unverified on this hat. Start dim for the first tests.</p>
       <div class="row"><button id="btn-disp-on">Display on</button><button id="btn-disp-off">Display off</button><span id="dstate" class="small">${esc(displayNote)}</span></div>
     </div>
-    <div class="card">
-      <h2>Test patterns (dim, static)</h2>
+    <details class="card">
+      <summary>Test patterns (dim, static)</summary>
       <div class="row"><button id="btn-test-color">Solid red</button><button id="btn-test-corner">Corner test</button></div>
       <p class="small">Corner test: red top-left (double width), green top-right, blue bottom-left, white bottom-right.</p>
-    </div>
-    <div class="card">
-      <h2>Protocol log</h2>
+    </details>
+    <details class="card">
+      <summary>Protocol log</summary>
       <div class="row"><button id="btn-copylog">Copy log</button><button id="btn-clearlog">Clear</button></div>
       <pre id="trace" class="small" style="max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(traceLog.join('\n'))}</pre>
-    </div>
+    </details>
     <div class="card">
       <h2>Device settings</h2>
       <label for="s-rot">Rotation</label>
       <select id="s-rot">${[0, 90, 180, 270].map((r) => `<option ${r === settings.transform.rotation ? 'selected' : ''}>${r}</option>`).join('')}</select>
       <label><input type="checkbox" id="s-mh" ${settings.transform.mirrorH ? 'checked' : ''}/> Mirror horizontally</label>
       <label><input type="checkbox" id="s-mv" ${settings.transform.mirrorV ? 'checked' : ''}/> Mirror vertically</label>
-      <div class="row">
+      <div class="form-grid">
         <div><label for="s-chunk">Chunk bytes</label><input id="s-chunk" type="number" min="1" max="512" value="${settings.chunkSize}" /></div>
         <div><label for="s-delay">Write delay ms</label><input id="s-delay" type="number" min="0" max="1000" value="${settings.interWriteDelayMs}" /></div>
       </div>
       <p class="small">Chunk size and delay apply on the next connection. Only raise them after testing on the hat.</p>
     </div>`;
 
-  $('#btn-connect').onclick = onConnect;
   $('#btn-copylog').onclick = () => navigator.clipboard?.writeText(traceLog.join('\n'));
   $('#btn-clearlog').onclick = () => { traceLog.length = 0; $('#trace').textContent = ''; };
-  $('#btn-disconnect').onclick = () => (sharedCap() ? disconnectPrimary() : controller.disconnect());
   $('#btn-test-color').onclick = () => sendImage(solid(settings.width, settings.height, [255, 0, 0]));
   $('#btn-test-corner').onclick = () => sendImage(physical(cornerTest(...logicalDims())));
   $('#btn-disp-on').onclick = () => control('display', () => controller.setDisplay(true), (n) => (displayNote = n), 'dstate', 'On');
   $('#btn-disp-off').onclick = () => control('display', () => controller.setDisplay(false), (n) => (displayNote = n), 'dstate', 'Off');
-  let timer: ReturnType<typeof setTimeout>;
   const slider = $<HTMLInputElement>('#brightness');
   slider.oninput = () => {
     const level = Number(slider.value);
+    settings = { ...settings, brightness: level };
     $('#bval').textContent = String(level);
     $('#bstate').textContent = 'pending…';
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
+    clearTimeout(brightnessTimer);
+    brightnessTimer = setTimeout(async () => {
       await control('brightness', () => controller.setBrightness(level), (n) => (brightnessNote = n), 'bstate', 'confirmed');
-      settings = { ...settings, brightness: level };
       persistSettings();
     }, 300);
   };
@@ -260,8 +273,9 @@ function logicalDims(): [number, number] {
 function physical(img: RgbImage): RgbImage { return transformImage(img, settings.transform); }
 
 function renderCreate() {
-  $('#view-create').innerHTML = `
+  $('#content-editor').innerHTML = `
     <div class="card">
+      <h2>Create content</h2>
       <label for="c-kind">Content</label>
       <select id="c-kind"><option value="text">Text</option><option value="solid">Solid color</option><option value="image">Image (PNG/JPEG/GIF)</option></select>
       <div id="c-text">
@@ -282,9 +296,11 @@ function renderCreate() {
       <p id="c-err" class="bad small"></p>
       <canvas id="preview" aria-label="Pixel preview"></canvas>
       <div class="row"><button id="btn-send" class="primary" disabled>Send to hat</button><button id="btn-cancel" class="danger" hidden>Cancel</button></div>
-      <progress id="progress" hidden value="0" max="1"></progress>
-      <p id="send-note" class="small">${esc(sendNote)}</p>
-      <div class="row"><input id="c-name" type="text" placeholder="Preset name" maxlength="60" style="flex:1" /><button id="btn-save">Save preset</button></div>
+      <p id="send-help" class="small"></p>
+      <progress id="progress" aria-label="Content upload progress" hidden value="0" max="1"></progress>
+      <p id="send-note" class="small" role="status">${esc(sendNote)}</p>
+      <label for="c-name">Preset name</label>
+      <div class="row preset-save"><input id="c-name" type="text" placeholder="e.g. My greeting" maxlength="60" /><button id="btn-save">Save preset</button></div>
     </div>`;
   $('#c-kind').onchange = () => { syncKind(); void refreshPreview(); };
   ['#c-str', '#c-fg', '#c-bg', '#c-fit', '#c-speed'].forEach((s) => ($(s).oninput = () => void refreshPreview()));
@@ -316,7 +332,7 @@ function syncKind() {
 
 function currentContent(): Content {
   if (!document.getElementById('c-kind')) {
-    if (!savedCreateContent) throw new Error('Choose content on the Create tab first.');
+    if (!savedCreateContent) throw new Error('Choose content on the Connect tab first.');
     return savedCreateContent;
   }
   const k = $<HTMLSelectElement>('#c-kind').value;
@@ -362,7 +378,7 @@ async function refreshPreview(content?: Content) {
     if (seq !== renderSeq) return;
     savedCreateContent = selected;
     createContentChanged();
-    void saveKv('createContent', selected).catch((e) => { $('#c-err').textContent = `Could not save Create content: ${(e as Error).message}`; });
+    void saveKv('createContent', selected).catch((e) => { $('#c-err').textContent = `Could not save Connect content: ${(e as Error).message}`; });
     lastImage = image;
     lastFrames = frames ?? null;
     lastDelays = delays ?? [];
@@ -435,10 +451,10 @@ async function savePresetClick() {
 
 // ---------- Presets view ---------------------------------------------------------
 
-const backupSelection: ShareSelection = { creations: true, approach: true, scan: true };
+const backupSelection: ShareSelection = { creations: true, approach: true, scan: true, settings: true };
 
 async function renderPresets(message = '') {
-  const root = $('#view-presets');
+  const root = $('#settings-presets');
   let presets: Preset[] = [];
   let err = '';
   try { presets = await listPresets(); } catch (e) { err = (e as Error).message; }
@@ -447,17 +463,20 @@ async function renderPresets(message = '') {
     <div class="card">
       <h2>Presets</h2>
       ${err ? `<p class="bad">${esc(err)}</p>` : ''}
-      <ul class="list">${presets.map((p) => `<li data-id="${esc(p.id)}"><span>${esc(p.name)} <small class="muted">${isGroupPreset(p) ? 'group content' : p.content.kind}</small></span><button data-act="load">Load</button>${native && !useMock ? '<button data-act="share">Share</button>' : ''}<button data-act="del" class="danger">Delete</button></li>`).join('') || '<li class="muted">No presets yet.</li>'}</ul>
+      <ul class="list preset-list">${presets.map((p) => `<li data-id="${esc(p.id)}"><span>${esc(p.name)} <small class="muted">${isGroupPreset(p) ? `group content${approachAvailable ? '' : ' - requires the native app; kept for backup'}` : p.content.kind}</small></span><button data-act="load" ${isGroupPreset(p) && !approachAvailable ? 'disabled' : ''}>Load</button>${native && !useMock ? '<button data-act="share">Share</button>' : ''}<button data-act="del" class="danger">Delete</button></li>`).join('') || `<li class="muted">No presets yet. Save content on Connect${approachAvailable ? ' or a group preset on Approach' : ''} to find it here.</li>`}</ul>
+      ${approachAvailable ? '' : '<p class="small">Nearby Approach detection and phone-to-phone BLE sharing require the Android or iOS app. Imported group presets remain available for backup and export.</p>'}
     </div>
     <div class="card">
       <h2>Backup</h2>
       <fieldset class="share-options">
         <legend>Include in shared file</legend>
-        <label><input type="checkbox" id="p-include-creations" ${backupSelection.creations ? 'checked' : ''} /> <span>Creations <small>Saved text, colors, images and GIFs (${presets.filter((p) => !isGroupPreset(p)).length})</small></span></label>
-        <label><input type="checkbox" id="p-include-approach" ${backupSelection.approach ? 'checked' : ''} /> <span>Approach settings <small>Saved group presets (${presets.filter(isGroupPreset).length}) and current group content</small></span></label>
-        <label><input type="checkbox" id="p-include-scan" ${backupSelection.scan ? 'checked' : ''} /> <span>Scan settings <small>Proximity thresholds, timing and QR greeting profiles</small></span></label>
+        <label><input type="checkbox" id="p-include-creations" ${backupSelection.creations ? 'checked' : ''} /> <span>Creations <small>Saved text, colors, images and GIFs (${presets.filter((p) => !isGroupPreset(p)).length}) and current Connect content</small></span></label>
+        <label><input type="checkbox" id="p-include-approach" ${backupSelection.approach ? 'checked' : ''} /> <span>Approach settings <small>Saved group presets (${presets.filter(isGroupPreset).length}), current group content, mode, beacon and nearby-cap detection</small></span></label>
+        <label><input type="checkbox" id="p-include-scan" ${backupSelection.scan ? 'checked' : ''} /> <span>Scan settings <small>Proximity thresholds, timing, QR profiles, current greeting, repetitions, speed and logging preference (not log contents)</small></span></label>
+        <label><input type="checkbox" id="p-include-settings" ${backupSelection.settings ? 'checked' : ''} /> <span>Display &amp; transport settings <small>Dimensions, brightness, rotation, mirroring and Bluetooth write settings</small></span></label>
       </fieldset>
       <p class="small">Choose at least one category. Importing replaces only the included categories; everything else stays unchanged.</p>
+      <p class="small">Importing Scan settings can enable scan logging. Phone identity, cap connections, permissions and running state are not shared.</p>
       <div class="row"><button id="btn-export">Share presets</button><label class="row"><span>Import</span><input id="p-import" type="file" accept="application/json,.json" /></label></div>
       <p id="p-msg" class="small" role="status">${esc(message)}</p>
       <p id="p-persist" class="small"></p>
@@ -473,7 +492,7 @@ async function renderPresets(message = '') {
     try {
       const { image } = await renderContent(p.content);
       lastImage = image;
-      showTab('create');
+      showTab('connect');
       setCreateFrom(p.content);
       await refreshPreview(p.content);
     } catch (e) { $('#p-msg').textContent = (e as Error).message; }
@@ -482,12 +501,12 @@ async function renderPresets(message = '') {
   const shareOptions = $<HTMLFieldSetElement>('.share-options', root);
   let sharingBackup = false;
   const updateSelection = () => {
-    for (const key of ['creations', 'approach', 'scan'] as const) {
+    for (const key of ['creations', 'approach', 'scan', 'settings'] as const) {
       backupSelection[key] = $<HTMLInputElement>(`#p-include-${key}`).checked;
     }
     exportButton.disabled = sharingBackup || !Object.values(backupSelection).some(Boolean);
   };
-  for (const key of ['creations', 'approach', 'scan'] as const) {
+  for (const key of ['creations', 'approach', 'scan', 'settings'] as const) {
     $<HTMLInputElement>(`#p-include-${key}`).onchange = updateSelection;
   }
   updateSelection();
@@ -497,7 +516,12 @@ async function renderPresets(message = '') {
     updateSelection();
     try {
       const all = await listPresets();
-      const json = exportSelectedJson(all, getApproachSettings(), backupSelection, scanner?.exportProfiles());
+      const json = exportSelectedJson(all, getApproachSettings(), backupSelection,
+        backupSelection.scan ? scanner?.exportProfiles() : undefined, {
+          settings,
+          ...(backupSelection.creations ? { createContent: currentContent() } : {}),
+          ...(backupSelection.scan ? scanner?.exportSettings() : {}),
+        });
       const shared = await shareTextFile('led-hat-presets.json', json, 'application/json', 'LED hat presets');
       $('#p-msg').textContent = shared ? 'Selected categories shared.' : '';
     } catch (e) { $('#p-msg').textContent = `Share failed: ${(e as Error).message}`; }
@@ -512,15 +536,28 @@ async function renderPresets(message = '') {
       const merged = mergeSharedPresets(await listPresets(), data);
       const currentApproach = getApproachSettings();
       const nextApproach = data.version === 2 && (data.approach || data.scan) ? {
-        ...currentApproach, ...data.scan, tiers: data.approach?.groups ?? currentApproach.tiers,
+        ...currentApproach, ...data.scan,
+        ...(data.approach?.mode !== undefined ? { mode: data.approach.mode } : {}),
+        ...(data.approach?.beacon !== undefined ? { beacon: data.approach.beacon } : {}),
+        ...(data.approach?.countNearbyCaps !== undefined ? { countNearbyCaps: data.approach.countNearbyCaps } : {}),
+        tiers: data.approach?.groups ?? currentApproach.tiers,
       } : undefined;
-      await restoreBackup(merged, data.version === 1 ? data.settings : undefined, nextApproach);
-      if (data.version === 1) settings = data.settings;
+      const scanSettings = scanner?.prepareImport(data);
+      const createContent = data.version === 2 ? data.createContent : undefined;
+      await restoreBackup(merged, data.settings, nextApproach, { ...scanSettings, createContent });
+      if (data.settings) settings = data.settings;
+      if (createContent) {
+        savedCreateContent = createContent;
+        if (createContent.kind === 'image') imageDataUrl = createContent.dataUrl;
+        setCreateFrom(createContent);
+      }
       if (nextApproach) applyImportedApproachSettings(nextApproach);
-      if (data.qrProfiles) await scanner?.importProfiles(data.qrProfiles);
+      if (scanSettings) scanner?.applyImportedSettings(scanSettings);
+      renderDeviceSettings();
+      await refreshPreview();
       await renderPresets(data.version === 1
         ? `Imported ${data.presets.length} presets and ${data.qrProfiles.profiles.length} QR profiles. Restart the connection to apply transport settings.`
-        : `Imported shared categories.${data.qrProfiles ? ` Imported ${data.qrProfiles.profiles.length} QR profiles.` : ''} Other presets and settings were kept.`);
+        : `Imported shared categories.${data.qrProfiles ? ` Imported ${data.qrProfiles.profiles.length} QR profiles.` : ''} Excluded presets and settings were kept.${data.settings ? ' Restart the connection to apply transport settings.' : ''}`);
     } catch (e) { $('#p-msg').textContent = `Import failed: ${(e as Error).message}`; }
   };
   const persisted = await navigator.storage?.persisted?.().catch(() => false);
@@ -653,7 +690,7 @@ function initShareReceiver() {
       incomingNote = `Saved preset "${p.name}"${o.fromName ? ` from ${o.fromName}` : ''}.`;
       setTimeout(() => {
         renderSharePrompt();
-        if (!$('#view-presets').hidden) void renderPresets();
+        if (!$('#view-settings').hidden) void renderPresets();
       }, 0);
     },
     onClosed: (o, _state, message) => { incomingNote = `Preset "${o.name}" not received: ${message}`; renderSharePrompt(); },
@@ -671,11 +708,17 @@ function setCreateFrom(c: Content) {
 // ---------- tabs, offline, install, updates ---------------------------------------
 
 function showTab(name: string) {
-  document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
-  for (const v of ['connect', 'create', 'presets', 'approach', 'scan']) $(`#view-${v}`).hidden = v !== name;
+  if (name === 'approach' && !approachAvailable) return;
+  document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => {
+    const selected = b.dataset.tab === name;
+    b.setAttribute('aria-selected', String(selected));
+    b.tabIndex = selected ? 0 : -1;
+  });
+  for (const v of ['connect', 'approach', 'scan', 'settings']) $(`#view-${v}`).hidden = v !== name;
   if (name !== 'scan') scanner?.stopCamera();
-  if (name === 'presets') void renderPresets();
+  if (name === 'settings') void renderPresets();
   if (name === 'approach') renderApproach();
+  window.scrollTo(0, 0);
 }
 
 function setupPwa() {
@@ -731,14 +774,28 @@ async function main() {
   try {
     const saved = await loadKv('createContent');
     if (saved !== undefined) savedCreateContent = validateContent(saved);
-  } catch (e) { banner(`<b>Could not restore Create content:</b> ${esc((e as Error).message)}`); }
+  } catch (e) { banner(`<b>Could not restore Connect content:</b> ${esc((e as Error).message)}`); }
   await initApproach(approachContext());
   initShareReceiver();
   renderConnect();
+  renderDeviceSettings();
   renderCreate();
   scanner = new GreetingUi({ controller: () => controller, logicalDims, physical, marqueeDelay });
   await scanner.init();
+  $('#tab-approach').hidden = !approachAvailable;
   document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab!)));
+  $('#tab-bar').onkeydown = (event) => {
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>('nav button:not([hidden])')];
+    const index = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+      : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    showTab(tabs[next]!.dataset.tab!);
+    tabs[next]!.focus();
+  };
   setupPwa();
   void requestPersistence();
 }

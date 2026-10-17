@@ -220,3 +220,11 @@ test('Android manual releases derive the tag from validated project files', (t) 
     assert.equal(readFileSync(output, 'utf8'), '');
   }
 });
+
+test('Android setup uses supported SDK packages without the removed tools package', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release-android.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const setup = workflow.match(/      - uses: android-actions\/setup-android@v3\n([\s\S]*?)(?=      - )/);
+  assert.ok(setup, 'Android SDK setup must be present');
+  assert.match(setup[1], /packages: platform-tools\n/);
+  assert.ok(workflow.includes('sdkmanager "platforms;android-36" "build-tools;35.0.0"'));
+});

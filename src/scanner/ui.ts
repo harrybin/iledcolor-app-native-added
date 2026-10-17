@@ -10,7 +10,7 @@ import { extractNameSafely } from './extract';
 import { appendScanLog, shareScanLog } from './log';
 import {
   DEFAULT_GREETING, greetingDuration, greetingText, validateGreeting, validateGreetingProfiles,
-  type ExtractedName, type GreetingProfile, type GreetingProfileState, type GreetingSettings,
+  type ExtractedName, type GreetingProfile, type GreetingProfileState, type GreetingSettings, type ScannerBackup,
 } from './greeting';
 
 interface ScannerContext {
@@ -40,10 +40,22 @@ export class GreetingUi {
     $('view-scan').innerHTML = `
       <div class="card">
         <h2>QR greeting</h2>
+        <div class="row scan-actions">
+          <button id="qr-start" class="primary">Scan QR code</button>
+          <button id="qr-stop" hidden>Stop camera</button>
+          <button id="qr-cancel" hidden>End greeting</button>
+        </div>
+        <video id="qr-video" playsinline muted hidden aria-label="QR camera preview"></video>
+        <p id="qr-status" role="status" aria-live="polite"></p>
+        <p id="qr-error" class="bad" role="alert"></p>
+        <p id="qr-ready" class="small" role="status"></p>
         <p class="small">Scan a badge to greet its owner on this phone's primary cap. Other caps keep playing.
         Send content to the cap first so it can be restored afterwards.</p>
         <label for="qr-profile">Saved QR profile</label>
         <select id="qr-profile"><option value="">None — general QR data</option></select>
+      </div>
+      <div class="card">
+        <h2>QR profile</h2>
         <label for="qr-note">Profile note</label>
         <input id="qr-note" type="text" maxlength="60" placeholder="e.g. MS AI Tour" />
         <div class="row">
@@ -57,6 +69,9 @@ export class GreetingUi {
         Regex capture groups 1–3 map to firstname, lastname and company. Named groups may use firstname or name,
         lastname, and company. Example for MS AI Tour badges: ^[^^]*\\^(?&lt;firstname&gt;[^^]+)\\^(?&lt;lastname&gt;[^^]+)\\^(?&lt;company&gt;[^^]+)\\^.
         Enter the pattern without / delimiters.</p>
+      </div>
+      <div class="card">
+        <h2>Greeting settings</h2>
         <label for="qr-template">Greeting</label>
         <input id="qr-template" type="text" maxlength="200" aria-describedby="qr-template-help" />
         <p id="qr-template-help" class="small">Use {name} or {firstname}, {lastname} and {company} for the captured fields.</p>
@@ -64,14 +79,15 @@ export class GreetingUi {
         <input id="qr-repetitions" type="number" min="1" max="65536" step="1" />
         <label for="qr-speed">Scroll speed</label>
         <input id="qr-speed" type="range" min="1" max="10" step="1" />
-        <div class="row">
-          <button id="qr-start" class="primary">Scan QR code</button>
-          <button id="qr-stop" hidden>Stop camera</button>
-          <button id="qr-cancel" hidden>End greeting</button>
-        </div>
-        <video id="qr-video" playsinline muted hidden aria-label="QR camera preview"></video>
-        <p id="qr-status" role="status" aria-live="polite"></p>
-        <p id="qr-error" class="bad" role="alert"></p>
+        <details>
+          <summary>Enter QR data manually</summary>
+          <label for="qr-raw">QR data (not saved)</label>
+          <textarea id="qr-raw" rows="3" maxlength="4096"></textarea>
+          <button id="qr-submit">Greet from QR data</button>
+        </details>
+      </div>
+      <div class="card">
+        <h2>Scan log &amp; privacy</h2>
         <label><input id="qr-log-enabled" type="checkbox" /> Save all scanned data to a local file</label>
         <p class="small">Off by default. When enabled, logs complete QR payloads (including failed greetings and manual entries),
         timestamps and profile notes in qr-scan-log.jsonl. This may include personal data.
@@ -80,12 +96,6 @@ export class GreetingUi {
         <button id="qr-log-share">Share scan log</button>
         <p id="qr-log-status" role="status" aria-live="polite"></p>
         <p id="qr-log-error" class="bad" role="alert"></p>
-        <details>
-          <summary>Enter QR data manually</summary>
-          <label for="qr-raw">QR data (not saved)</label>
-          <textarea id="qr-raw" rows="3" maxlength="4096"></textarea>
-          <button id="qr-submit">Greet from QR data</button>
-        </details>
         <p class="small">QR data is processed locally and is only saved when logging is enabled. Only the greeting is sent to your cap over Bluetooth.
         Camera access requires permission.
         Keep the app open until the previous content is restored.</p>
@@ -96,9 +106,10 @@ export class GreetingUi {
         <a href="${import.meta.env.BASE_URL}licenses/scanner-credits.txt">Credits and licenses</a>.</p>
       </div>`;
     let settings: GreetingSettings = DEFAULT_GREETING;
+    let restoredSettings = false;
     try {
       const saved = await loadKv('qrGreeting');
-      if (saved !== undefined) settings = validateGreeting(saved);
+      if (saved !== undefined) { settings = validateGreeting(saved); restoredSettings = true; }
     } catch (e) { this.error(`Could not restore scanner settings: ${this.message(e)}`); }
     try {
       const savedProfiles = await loadKv('qrGreetingProfiles');
@@ -107,7 +118,7 @@ export class GreetingUi {
         this.profiles = state.profiles;
         this.selectedProfileId = state.selectedId;
         const selected = this.profiles.find((profile) => profile.id === this.selectedProfileId);
-        if (selected) settings = { ...settings, pattern: selected.pattern, template: selected.template };
+        if (selected && !restoredSettings) settings = { ...settings, pattern: selected.pattern, template: selected.template };
       }
     } catch (e) { this.error(`Could not restore saved QR profiles: ${this.message(e)}`); }
     try {
@@ -195,25 +206,48 @@ export class GreetingUi {
     return validateGreetingProfiles({ profiles: this.profiles, selectedId: this.selectedProfileId });
   }
 
-  async importProfiles(value: GreetingProfileState) {
-    const state = validateGreetingProfiles(value);
-    const active = state.profiles.find((profile) => profile.id === state.selectedId);
-    const settings = validateGreeting({
-      ...this.readSettings(),
-      pattern: active?.pattern ?? DEFAULT_GREETING.pattern,
-      template: active?.template ?? DEFAULT_GREETING.template,
-    });
-    await Promise.all([
-      saveKv('qrGreetingProfiles', state),
-      saveKv('qrGreeting', settings),
-    ]);
-    this.profiles = state.profiles;
-    this.selectedProfileId = state.selectedId;
-    this.renderProfiles();
-    $<HTMLSelectElement>('qr-profile').value = this.selectedProfileId ?? '';
-    $<HTMLInputElement>('qr-note').value = active?.note ?? '';
-    $<HTMLInputElement>('qr-pattern').value = settings.pattern;
-    $<HTMLInputElement>('qr-template').value = settings.template;
+  exportSettings(): ScannerBackup {
+    return { qrGreeting: this.readSettings(), qrScanLogging: this.loggingEnabled };
+  }
+
+  /** Prepare legacy profile-only imports before committing any backup data. */
+  prepareImport(value: ScannerBackup): ScannerBackup {
+    const state = value.qrProfiles === undefined ? undefined : validateGreetingProfiles(value.qrProfiles);
+    const active = state?.profiles.find((profile) => profile.id === state.selectedId);
+    const settings = value.qrGreeting !== undefined ? validateGreeting(value.qrGreeting)
+      : state ? validateGreeting({
+        ...this.readSettings(),
+        pattern: active?.pattern ?? DEFAULT_GREETING.pattern,
+        template: active?.template ?? DEFAULT_GREETING.template,
+      }) : undefined;
+    return {
+      ...(state ? { qrProfiles: state } : {}),
+      ...(settings ? { qrGreeting: settings } : {}),
+      ...(value.qrScanLogging !== undefined ? { qrScanLogging: value.qrScanLogging } : {}),
+    };
+  }
+
+  applyImportedSettings(value: ScannerBackup) {
+    if (value.qrProfiles) {
+      this.profiles = value.qrProfiles.profiles;
+      this.selectedProfileId = value.qrProfiles.selectedId;
+      this.renderProfiles();
+      $<HTMLSelectElement>('qr-profile').value = this.selectedProfileId ?? '';
+      const active = this.profiles.find((profile) => profile.id === this.selectedProfileId);
+      $<HTMLInputElement>('qr-note').value = active?.note ?? '';
+    }
+    if (value.qrGreeting) {
+      const settings = value.qrGreeting;
+      $<HTMLInputElement>('qr-pattern').value = settings.pattern;
+      $<HTMLInputElement>('qr-template').value = settings.template;
+      $<HTMLInputElement>('qr-repetitions').value = String(settings.repetitions);
+      $<HTMLInputElement>('qr-speed').value = String(settings.speed);
+    }
+    if (value.qrScanLogging !== undefined) {
+      this.loggingEnabled = value.qrScanLogging;
+      $<HTMLInputElement>('qr-log-enabled').checked = this.loggingEnabled;
+      $('qr-log-status').textContent = this.loggingEnabled ? 'Scan logging enabled by imported settings.' : 'Scan logging disabled. Existing log kept.';
+    }
   }
 
   private async persistProfiles(profiles = this.profiles, selectedId = this.selectedProfileId) {
@@ -277,6 +311,10 @@ export class GreetingUi {
     if (!document.getElementById('qr-start')) return;
     const ctl = this.ctx.controller();
     const unavailable = ctl.state !== 'Ready' || !ctl.canRestoreContent || ctl.temporaryActive || this.processing || this.sharingLog || this.savingLogging;
+    $('qr-ready').textContent = this.scanning ? '' : ctl.state !== 'Ready' ? 'Connect your primary cap on Connect before scanning.'
+      : !ctl.canRestoreContent ? 'Send content from Connect first so it can be restored after the greeting.'
+      : ctl.temporaryActive || this.processing ? 'Wait for the current greeting to finish, or end it above.'
+      : this.sharingLog || this.savingLogging ? 'Wait for the scan log operation to finish.' : 'Ready to scan a badge.';
     $<HTMLButtonElement>('qr-start').disabled = unavailable || this.scanning;
     $<HTMLButtonElement>('qr-submit').disabled = unavailable || this.scanning;
     $('qr-stop').hidden = !this.scanning;

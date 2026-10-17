@@ -1,19 +1,86 @@
-# Local Android LED Hat Controller
+# LED Hat Controller - Android, iOS and Web
+
+## App navigation
+
+The native apps have four icon tabs: **Connect**, **Approach**, **Scan**, and
+**Settings** (the gear icon at the far right). The web app has **Connect**, **Scan**
+and **Settings**; native-only Approach detection is not offered in the browser.
+The same source supplies the content editor, scan-first layout, settings, accessible
+tab navigation and responsive controls on Android, iOS and web.
+
+- **Connect:** connect/disconnect your primary cap, then create text, solid colours,
+  images or GIFs, preview and send them, or save a content preset. There is no separate Create tab.
+- **Approach:** configure greetings and group content, compare nearby texts, calibrate
+  detection and record/replay walks. Every spanning **Marquee** choice is marked **unstable**:
+  physical cap ordering and playback synchronization are not guaranteed. Individual greetings remain available.
+- **Scan:** the scan/stop/end-greeting actions, camera and status come first, followed by
+  the profile selector, QR profile editor, greeting settings, manual entry, and scan-log/privacy controls.
+- **Settings:** saved presets and category-based sharing/import, then display brightness/on/off,
+  expandable test patterns and protocol log, and rotation/mirroring/transport settings.
+  Loading a content preset opens Connect; loading a group preset opens Approach.
+
+The UI retains its dark theme and blue accent, with larger touch targets, visible keyboard
+focus, arrow/Home/End tab navigation, a non-colour selected-tab marker, responsive form
+grids and wrapping long preset names. Diagnostics are expandable, not removed.
+Existing stored content, settings, QR profiles, backup formats and BLE preset sharing are preserved.
+See [the UI change record](docs/ui-improvements.md) for the expert review and implementation details.
 
 ## Native apps and approach mode
 
-Besides the PWA, the project builds **Android** and **iOS** apps (Capacitor, `android/` and `ios/`) with the same features plus **Approach mode**: when caps come close, they show greetings for each other or one marquee spanning all caps, configurable for 1, 2, up to 4, up to 8, and more than 8 caps. While approach mode runs, presets can also be shared with a nearby phone; the receiver must accept the preset before it is transferred. See [docs/approaching-mode.md](docs/approaching-mode.md) for the detection design and [docs/INSTALL.md](docs/INSTALL.md) for building the APK.
+Besides the PWA, the project builds **Android** and **iOS** apps (Capacitor, `android/` and `ios/`) with the shared UI plus **Approach mode**: when caps come close, they show greetings for each other or one marquee spanning all caps, configurable for 1, 2, up to 4, up to 8, and more than 8 caps. While approach mode runs, presets can also be shared with a nearby phone; the receiver must accept the preset before it is transferred. See [docs/approaching-mode.md](docs/approaching-mode.md) for the detection design and [docs/INSTALL.md](docs/INSTALL.md) for building the APK.
+
+Web Bluetooth requires a supported browser (for example Chrome on Android or desktop);
+Safari on iOS does not support it. Offline editing, presets, QR profiles, manual QR entry
+and backup/import remain available without Bluetooth. Camera scanning requires HTTPS
+and permission. Imported native group presets are retained and can be exported again,
+but cannot be loaded in the browser. Nearby BLE sharing is native-only; JSON file
+sharing/download remains available on web. The `#mock` development mode deliberately
+keeps all four tabs for simulated Approach scenarios.
+
+### App icons
+
+The PWA keeps its original six-colour LED grid. Android and iOS use a distinct blue cap
+silhouette containing those same LEDs, on an opaque dark background. Android includes
+legacy, round and transparent adaptive foreground variants at all five densities;
+iOS uses a 1024 px RGB icon without an alpha channel or baked-in rounded outer corners.
+Adaptive launcher artwork fits Android's safe circle.
+
+The vector reference is [`assets/native-icon.svg`](assets/native-icon.svg).
+Regenerate both web and native icon assets, then verify their dimensions and safe zones:
+
+```powershell
+npm run icons
+npm run test:icons
+```
+
+For native UI changes, rebuild from `src/` and synchronize both platforms rather than
+editing generated assets:
+
+```powershell
+npm run cap:sync
+```
+
+The iOS release workflow also builds the shared web UI and synchronizes it before
+archiving. Compiling/signing iOS requires macOS/Xcode and the signing setup below;
+web previews are not evidence of native Bluetooth or camera behaviour.
 
 Approach mode uses phone accelerometer/gyroscope data to support RSSI filtering, with RSSI-only fallback
 when sensors are unavailable. These sensors cannot locate other caps, so physical marquee ordering still
 uses manual local cap order and deterministic phone-ID order across phones.
 
-In **Presets → Backup**, choose what to include before tapping **Share presets**:
-**Creations** (saved text, colors, images and GIFs), **Approach settings** (saved group presets
-and current group content), and **Scan settings** (proximity thresholds, timing and QR greeting profiles).
+In **Settings → Backup**, choose what to include before tapping **Share presets**:
+**Creations** (saved text, colors, images and GIFs plus current Connect content),
+**Approach settings** (saved group presets, current group content, mode, beacon and nearby-cap detection),
+**Scan settings** (proximity thresholds, timing, QR profiles, current greeting/regex,
+repetitions, speed and scan-logging preference), and **Display & transport settings**
+(dimensions, brightness, rotation, mirroring and Bluetooth write settings).
 The system share sheet sends a JSON file. Import replaces only the included categories,
-keeping excluded presets, phone identity, cap connections and device settings unchanged.
-Older full JSON backups remain importable with their original full-replacement behavior.
+keeping excluded presets and settings unchanged. Importing Scan settings can enable
+local scan logging; log contents and scanned QR payloads are never included. Phone
+identity, cap connections, permissions and live running state are not shared.
+Older version-2 files keep newer settings they do not contain. Older full JSON backups
+remain importable with their original full-replacement behavior. Reconnect after importing
+transport settings to apply the new write profile.
 
 ## QR badge greetings
 
@@ -132,7 +199,7 @@ GitHub Actions must be enabled, and repository/organization policy must allow th
 
 ### Versioning and publishing
 
-`package.json` is the version source (currently **0.2.0**), with `package-lock.json` kept in sync.
+`package.json` is the version source (currently **0.2.2**), with `package-lock.json` kept in sync.
 The npm `version` hook updates Android's `versionName` and iOS's `MARKETING_VERSION`, plus both
 native build numbers. Only stable `MAJOR.MINOR.PATCH` versions are supported (no prerelease/build
 suffixes). The build number is `MAJOR * 1000000 + MINOR * 1000 + PATCH + 1`: `0.2.0` becomes
