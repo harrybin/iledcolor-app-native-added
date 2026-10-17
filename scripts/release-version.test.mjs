@@ -110,56 +110,69 @@ test('CLI checks the tag, lockfile and native metadata and synchronizes a versio
   assert.equal(run('--check', '--tag', 'v1.2.3').status, 0);
 });
 
-test('Android manual releases normalize and validate the tag before checkout', (t) => {
+test('Android manual releases derive the tag from validated project files', (t) => {
   const workflow = readFileSync(new URL('../.github/workflows/release-android.yml', import.meta.url), 'utf8');
-  const validation = workflow.match(/      - name: Validate manual release tag\n([\s\S]*?)      - uses: actions\/checkout@v4/);
-  assert.ok(validation, 'manual tag validation must run before checkout');
+  assert.ok(workflow.includes('  workflow_dispatch:\n\npermissions:'));
+  assert.ok(!workflow.includes('inputs.tag'));
+  assert.ok(workflow.includes('ref: ${{ github.sha }}'));
+  const validation = workflow.match(/      - name: Resolve manual release tag\n([\s\S]*?)      - uses: actions\/checkout@v4/);
+  assert.ok(validation);
+  assert.ok(workflow.indexOf('uses: actions/checkout@v4') < validation.index);
+  assert.ok(workflow.indexOf('uses: actions/setup-node@v4') < validation.index);
   assert.ok(validation[1].includes("if: github.event_name == 'workflow_dispatch'"));
-  assert.ok(validation[1].includes('RELEASE_TAG: ${{ inputs.tag }}'));
   assert.ok(validation[1].includes('GH_TOKEN: ${{ github.token }}'));
   assert.ok(validation[1].includes('RELEASE_COMMIT: ${{ github.sha }}'));
   assert.ok(validation[1].includes('id: release_tag'));
-  assert.ok(workflow.includes('ref: ${{ steps.release_tag.outputs.ref || github.ref }}'));
+  assert.ok(workflow.includes('ref: ${{ steps.release_tag.outputs.ref }}'));
   assert.ok(workflow.includes('RELEASE_TAG: ${{ steps.release_tag.outputs.tag || github.ref_name }}'));
   const script = validation[1].split('        run: |\n')[1].replace(/^          /gm, '');
   const root = mkdtempSync(join(tmpdir(), 'led-hat-release-tag-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const path of [
+    'scripts/release-version.mjs', 'package.json', 'package-lock.json',
+    'android/app/build.gradle', 'ios/App/App.xcodeproj/project.pbxproj',
+  ]) {
+    const destination = join(root, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(new URL('../' + path, import.meta.url), destination);
+  }
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const version = pkg.version;
   const output = join(root, 'output');
-  const run = (tag, exists, apiStatus = 0) => {
+  const run = (exists, apiStatus = 0) => {
     writeFileSync(output, '');
     return spawnSync('bash', ['-c', `
     gh() {
       printf 'API request: %s\\n' "$*" >&2
-      [[ "$1 $2" == "api repos/example/app/git/matching-refs/tags/v0.2.0" ]] || exit 99
+      [[ "$1 $2" == "api repos/example/app/git/matching-refs/tags/v${version}" ]] || exit 99
       [[ "$3" == "--jq" ]] || exit 99
-      [[ "$4" == '.[] | select(.ref == "refs/tags/v0.2.0") | .ref' ]] || exit 99
+      [[ "$4" == '.[] | select(.ref == "refs/tags/v${version}") | .ref' ]] || exit 99
       if [[ "$TAG_EXISTS" == "true" ]]; then
-        printf 'refs/tags/v0.2.0\\n'
+        printf 'refs/tags/v${version}\\n'
       fi
       return "$API_STATUS"
     }
     ${script}
   `], {
+    cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, RELEASE_TAG: tag, GITHUB_REPOSITORY: 'example/app',
+    env: { ...process.env, GITHUB_REPOSITORY: 'example/app',
       GITHUB_OUTPUT: output, TAG_EXISTS: String(exists), API_STATUS: String(apiStatus),
       RELEASE_COMMIT: 'selected-commit-sha' },
   });
   };
-  for (const tag of ['0.2.0', 'v0.2.0']) {
-    assert.equal(run(tag, true).status, 0, tag);
-    assert.equal(readFileSync(output, 'utf8'), 'tag=v0.2.0\nref=refs/tags/v0.2.0\n');
-    const missing = run(tag, false);
-    assert.equal(missing.status, 0);
-    assert.equal(readFileSync(output, 'utf8'), 'tag=v0.2.0\nref=selected-commit-sha\n');
-    assert.equal(run(tag, false, 1).status, 1, 'API failures must not fall back to a new tag');
-    assert.equal(readFileSync(output, 'utf8'), '');
-  }
-  for (const tag of ['', 'main', '01.2.3', 'v01.2.3', 'vv1.2.3', 'v1.2.3-beta.1',
-    '1.2.3+build', 'v1.2.3; exit 0', '1.2.3\nmain']) {
-    const invalid = run(tag, true);
-    assert.equal(invalid.status, 1, tag);
-    assert.match(invalid.stdout, /Release must use MAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH/);
+  assert.equal(run(true).status, 0);
+  assert.equal(readFileSync(output, 'utf8'), `tag=v${version}\nref=refs/tags/v${version}\n`);
+  const missing = run(false);
+  assert.equal(missing.status, 0);
+  assert.equal(readFileSync(output, 'utf8'), `tag=v${version}\nref=selected-commit-sha\n`);
+  assert.equal(run(false, 1).status, 1, 'API failures must not fall back to a new tag');
+  assert.equal(readFileSync(output, 'utf8'), '');
+  for (const value of ['', 'main', '01.2.3', 'v1.2.3', '1.2.3-beta.1',
+    '1.2.3+build', '1.2.3; exit 0', '1.2.3\nmain', '9.9.9']) {
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ ...pkg, version: value }));
+    const invalid = run(true);
+    assert.notEqual(invalid.status, 0, value);
     assert.ok(!invalid.stderr.includes('API request:'), 'invalid tags must not reach the API');
     assert.equal(readFileSync(output, 'utf8'), '');
   }

@@ -170,10 +170,11 @@ publishing jobs share a per-tag concurrency lock to avoid races when creating th
 The existing GitHub Pages workflow is unchanged.
 
 You can also start **Actions > Build Android release / Build iOS release > Run workflow**,
-for example after correcting signing secrets. Android accepts either `0.2.0` or `v0.2.0`.
-If `v0.2.0` exists, Android builds that tag. Otherwise it builds the selected branch's commit
-and creates the tag at that exact commit when publishing the successful build. The requested
-version must match that commit's npm manifests and native metadata; no version bump is performed.
+for example after correcting signing secrets. Android asks for no version: it reads `package.json`
+from the selected branch's commit and checks that the npm manifests and native metadata agree.
+If the corresponding tag (for example `v0.2.0`) exists, Android builds that tag. Otherwise it builds
+the selected commit and creates the tag at that exact commit when publishing the successful build.
+No version bump is performed; prepare and commit version changes before running the workflow.
 iOS requires an existing full `v0.2.0` tag and never creates tags.
 
 Pushing a tag starts the Android build automatically; manual Android runs also support releasing

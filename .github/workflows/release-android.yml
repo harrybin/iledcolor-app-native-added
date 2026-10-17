@@ -4,17 +4,12 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Release version or tag (e.g. 0.2.0 or v0.2.0), matching package.json
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: mobile-release-android-${{ inputs.tag || github.ref_name }}
+  group: mobile-release-android-${{ github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -29,32 +24,33 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.version.outputs.commit }}
     steps:
-      - name: Validate manual release tag
-        id: release_tag
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          RELEASE_TAG="v${RELEASE_TAG#v}"
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::Release must use MAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH (for example 0.1.0 or v0.1.0), not a branch."
-            exit 1
-          fi
-          RELEASE_REF=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" \
-            --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .ref")
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "ref=${RELEASE_REF:-$RELEASE_COMMIT}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.release_tag.outputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Resolve manual release tag
+        id: release_tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npm run version:check
+          RELEASE_TAG="v$(node -p "require('./package.json').version")"
+          RELEASE_REF=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$RELEASE_TAG" \
+            --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .ref")
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=${RELEASE_REF:-$RELEASE_COMMIT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ steps.release_tag.outputs.ref }}
+          persist-credentials: false
       - name: Validate version and tag
         id: version
         env:
