@@ -634,12 +634,13 @@ export function renderApproach() {
       <h2>Content per group size</h2>
       <p class="small">${esc(TEMPLATE_HELP)}</p>
       ${TIER_IDS.map(tierEditor).join('')}
-      <div class="row"><input id="ap-preset-name" type="text" placeholder="Preset name" maxlength="60" style="flex:1" /><button id="ap-preset-save">Save as preset</button></div>
-      <p id="ap-preset-msg" class="small">Saved group presets appear on the Presets tab and are included in export/import.</p>
+      <label for="ap-preset-name">Group preset name</label>
+      <div class="row preset-save"><input id="ap-preset-name" type="text" placeholder="e.g. Festival greetings" maxlength="60" /><button id="ap-preset-save">Save as preset</button></div>
+      <p id="ap-preset-msg" class="small" role="status">Saved group presets appear on the Settings tab and are included in share/import.</p>
     </div>
     <div class="card">
       <h2>Detection</h2>
-      <div class="row">
+      <div class="form-grid">
         <div><label for="ap-enter">Near at ≥ dBm</label><input id="ap-enter" type="number" min="-110" max="-20" value="${settings.enterDbm}" /><span class="small" id="ap-enter-m">${formatMeters(settings.enterDbm)}</span></div>
         <div><label for="ap-leave">Away below dBm</label><input id="ap-leave" type="number" min="-120" max="-20" value="${settings.leaveDbm}" /><span class="small" id="ap-leave-m">${formatMeters(settings.leaveDbm)}</span></div>
         <div><label for="ap-settle">Settle s</label><input id="ap-settle" type="number" min="0" max="30" step="0.5" value="${settings.settleMs / 1000}" /></div>
@@ -718,6 +719,7 @@ export function renderApproach() {
       else if (field === 'mode') t.mode = el.value === 'span' ? 'span' : 'individual';
       else t[field] = el.value;
       updateSettings({ ...settings, tiers: { ...settings.tiers, [id]: t } });
+      if (field === 'mode') $(`[data-marquee-warning="${id}"]`).hidden = t.mode !== 'span';
     }));
   }
   $('#ap-preset-save').onclick = async () => {
@@ -818,6 +820,7 @@ function tierEditor(id: TierId): string {
       <input type="color" data-tier="${id}" data-field="fg" value="${t.fg}" aria-label="text color" />
       <input type="color" data-tier="${id}" data-field="bg" value="${t.bg}" aria-label="background" />
     </div>
+    <p class="warn small" data-marquee-warning="${id}" ${t.mode === 'span' ? '' : 'hidden'}>Marquee is unstable: physical cap order and playback synchronization may differ. Use Individual for reliable greetings.</p>
     <input type="text" data-tier="${id}" data-field="text" maxlength="120" value="${esc(t.text)}" aria-label="${esc(TIER_LABELS[id])} text" />
     <label class="small">Speed <input type="range" min="1" max="10" data-tier="${id}" data-field="speed" value="${t.speed}" /></label>
     </div>

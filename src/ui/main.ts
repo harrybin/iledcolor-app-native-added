@@ -101,6 +101,10 @@ function updateButtons() {
   set('btn-connect', busy || ready || controller.temporaryActive);
   set('btn-disconnect', s === 'Disconnected');
   set('btn-send', !ready || !lastImage);
+  const help = document.getElementById('send-help');
+  if (help) help.textContent = controller.temporaryActive ? 'Wait for the QR greeting to finish before sending.'
+    : !ready ? 'Connect your hat above to send content. You can edit and preview offline.'
+    : !lastImage ? 'Choose valid content to enable sending.' : 'Preview ready. Send it to your connected hat.';
   set('btn-test-color', !ready); set('btn-test-corner', !ready);
   set('btn-disp-on', !ready); set('btn-disp-off', !ready);
   set('brightness', !ready);
@@ -153,23 +157,23 @@ function renderDeviceSettings() {
       <p class="small">Mapping and "dimmest ≠ off" are unverified on this hat. Start dim for the first tests.</p>
       <div class="row"><button id="btn-disp-on">Display on</button><button id="btn-disp-off">Display off</button><span id="dstate" class="small">${esc(displayNote)}</span></div>
     </div>
-    <div class="card">
-      <h2>Test patterns (dim, static)</h2>
+    <details class="card">
+      <summary>Test patterns (dim, static)</summary>
       <div class="row"><button id="btn-test-color">Solid red</button><button id="btn-test-corner">Corner test</button></div>
       <p class="small">Corner test: red top-left (double width), green top-right, blue bottom-left, white bottom-right.</p>
-    </div>
-    <div class="card">
-      <h2>Protocol log</h2>
+    </details>
+    <details class="card">
+      <summary>Protocol log</summary>
       <div class="row"><button id="btn-copylog">Copy log</button><button id="btn-clearlog">Clear</button></div>
       <pre id="trace" class="small" style="max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(traceLog.join('\n'))}</pre>
-    </div>
+    </details>
     <div class="card">
       <h2>Device settings</h2>
       <label for="s-rot">Rotation</label>
       <select id="s-rot">${[0, 90, 180, 270].map((r) => `<option ${r === settings.transform.rotation ? 'selected' : ''}>${r}</option>`).join('')}</select>
       <label><input type="checkbox" id="s-mh" ${settings.transform.mirrorH ? 'checked' : ''}/> Mirror horizontally</label>
       <label><input type="checkbox" id="s-mv" ${settings.transform.mirrorV ? 'checked' : ''}/> Mirror vertically</label>
-      <div class="row">
+      <div class="form-grid">
         <div><label for="s-chunk">Chunk bytes</label><input id="s-chunk" type="number" min="1" max="512" value="${settings.chunkSize}" /></div>
         <div><label for="s-delay">Write delay ms</label><input id="s-delay" type="number" min="0" max="1000" value="${settings.interWriteDelayMs}" /></div>
       </div>
@@ -290,9 +294,11 @@ function renderCreate() {
       <p id="c-err" class="bad small"></p>
       <canvas id="preview" aria-label="Pixel preview"></canvas>
       <div class="row"><button id="btn-send" class="primary" disabled>Send to hat</button><button id="btn-cancel" class="danger" hidden>Cancel</button></div>
-      <progress id="progress" hidden value="0" max="1"></progress>
-      <p id="send-note" class="small">${esc(sendNote)}</p>
-      <div class="row"><input id="c-name" type="text" placeholder="Preset name" maxlength="60" style="flex:1" /><button id="btn-save">Save preset</button></div>
+      <p id="send-help" class="small"></p>
+      <progress id="progress" aria-label="Content upload progress" hidden value="0" max="1"></progress>
+      <p id="send-note" class="small" role="status">${esc(sendNote)}</p>
+      <label for="c-name">Preset name</label>
+      <div class="row preset-save"><input id="c-name" type="text" placeholder="e.g. My greeting" maxlength="60" /><button id="btn-save">Save preset</button></div>
     </div>`;
   $('#c-kind').onchange = () => { syncKind(); void refreshPreview(); };
   ['#c-str', '#c-fg', '#c-bg', '#c-fit', '#c-speed'].forEach((s) => ($(s).oninput = () => void refreshPreview()));
@@ -455,7 +461,7 @@ async function renderPresets(message = '') {
     <div class="card">
       <h2>Presets</h2>
       ${err ? `<p class="bad">${esc(err)}</p>` : ''}
-      <ul class="list">${presets.map((p) => `<li data-id="${esc(p.id)}"><span>${esc(p.name)} <small class="muted">${isGroupPreset(p) ? 'group content' : p.content.kind}</small></span><button data-act="load">Load</button>${native && !useMock ? '<button data-act="share">Share</button>' : ''}<button data-act="del" class="danger">Delete</button></li>`).join('') || '<li class="muted">No presets yet.</li>'}</ul>
+      <ul class="list preset-list">${presets.map((p) => `<li data-id="${esc(p.id)}"><span>${esc(p.name)} <small class="muted">${isGroupPreset(p) ? 'group content' : p.content.kind}</small></span><button data-act="load">Load</button>${native && !useMock ? '<button data-act="share">Share</button>' : ''}<button data-act="del" class="danger">Delete</button></li>`).join('') || '<li class="muted">No presets yet. Save content on Connect or a group preset on Approach to find it here.</li>'}</ul>
     </div>
     <div class="card">
       <h2>Backup</h2>
@@ -663,7 +669,7 @@ function initShareReceiver() {
       incomingNote = `Saved preset "${p.name}"${o.fromName ? ` from ${o.fromName}` : ''}.`;
       setTimeout(() => {
         renderSharePrompt();
-        if (!$('#view-presets').hidden) void renderPresets();
+        if (!$('#view-settings').hidden) void renderPresets();
       }, 0);
     },
     onClosed: (o, _state, message) => { incomingNote = `Preset "${o.name}" not received: ${message}`; renderSharePrompt(); },
@@ -755,7 +761,7 @@ async function main() {
   scanner = new GreetingUi({ controller: () => controller, logicalDims, physical, marqueeDelay });
   await scanner.init();
   document.querySelectorAll<HTMLButtonElement>('nav button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab!)));
-  $('tab-bar').onkeydown = (event) => {
+  $('#tab-bar').onkeydown = (event) => {
     const tabs = [...document.querySelectorAll<HTMLButtonElement>('nav button')];
     const index = tabs.indexOf(document.activeElement as HTMLButtonElement);
     if (index < 0) return;
