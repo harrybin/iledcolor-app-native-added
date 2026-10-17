@@ -141,8 +141,17 @@ jobs:
           APK="led-hat-$RELEASE_TAG-android.apk"
           test -s "$APK"
           sha256sum "$APK" > SHA256SUMS-android.txt
+          if ! gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_COMMIT" > /dev/null
+          fi
+          TAG_COMMIT=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          if [[ "$TAG_COMMIT" != "$RELEASE_COMMIT" ]]; then
+            echo "::error::Release tag $RELEASE_TAG resolves to $TAG_COMMIT, expected $RELEASE_COMMIT."
+            exit 1
+          fi
           if ! gh release view "$RELEASE_TAG" --json tagName > /dev/null; then
-            gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" --draft \
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
               --title "LED Hat $RELEASE_TAG" --generate-notes \
               --notes "Android and iOS are built and uploaded independently. Each successful workflow adds its signed app and platform-specific checksums. iOS requires devices registered in the Ad Hoc provisioning profile. See README for installation."
           fi

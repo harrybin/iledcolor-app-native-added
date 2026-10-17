@@ -13,7 +13,7 @@ test('stable versions map to increasing native build numbers', () => {
   assert.deepEqual([...builds].sort((a, b) => a - b), builds);
 });
 
-test('Android publishing creates missing tags at the validated build commit', (t) => {
+test('Android publishing creates and verifies the tag at the validated build commit', (t) => {
   const workflow = readFileSync(new URL('../.github/workflows/release-android.yml', import.meta.url), 'utf8');
   assert.ok(workflow.includes('commit: ${{ steps.version.outputs.commit }}'));
   assert.ok(workflow.includes('echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"'));
@@ -24,15 +24,36 @@ test('Android publishing creates missing tags at the validated build commit', (t
   const root = mkdtempSync(join(tmpdir(), 'led-hat-release-publish-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, 'led-hat-v0.2.0-android.apk'), 'test artifact');
-  for (const exists of [false, true]) {
+  for (const scenario of [
+    { tagExists: false, tagCommit: 'built-commit-sha', releaseExists: false },
+    { tagExists: true, tagCommit: 'built-commit-sha', releaseExists: true },
+  ]) {
     const result = spawnSync('bash', ['-c', `
       gh() {
-        printf '%s\\n' "$*"
+        if [[ "$1" == "api" ]]; then
+          printf '%s\\n' "$*" >&2
+        else
+          printf '%s\\n' "$*"
+        fi
+        if [[ "$1 $2" == "api repos/example/app/git/ref/tags/v0.2.0" ]]; then
+          [[ "$TAG_EXISTS" == "true" ]]
+          return
+        fi
+        if [[ "$1 $2" == "api --method" ]]; then
+          [[ "$3 $4 $5 $6 $7 $8" == "POST repos/example/app/git/refs -f ref=refs/tags/v0.2.0 -f sha=built-commit-sha" ]] || exit 99
+          [[ "$TAG_EXISTS" == "false" ]] || exit 98
+          TAG_EXISTS=true
+          return
+        fi
+        if [[ "$1 $2" == "api repos/example/app/commits/v0.2.0" ]]; then
+          printf '%s\\n' "$TAG_COMMIT"
+          return
+        fi
         if [[ "$1 $2" == "release view" ]]; then
           return "$RELEASE_STATUS"
         fi
         if [[ "$1 $2" == "release create" ]]; then
-          [[ "$3 $4 $5 $6" == "v0.2.0 --target built-commit-sha --draft" ]] || exit 99
+          [[ "$3 $4 $5" == "v0.2.0 --verify-tag --draft" ]] || exit 99
         fi
       }
       ${script}
@@ -40,14 +61,36 @@ test('Android publishing creates missing tags at the validated build commit', (t
       cwd: root,
       encoding: 'utf8',
       env: { ...process.env, RELEASE_TAG: 'v0.2.0', RELEASE_COMMIT: 'built-commit-sha',
-        RELEASE_STATUS: exists ? '0' : '1' },
+        GH_REPO: 'example/app', TAG_EXISTS: String(scenario.tagExists),
+        TAG_COMMIT: scenario.tagCommit, RELEASE_STATUS: scenario.releaseExists ? '0' : '1' },
     });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.includes('release create'), !exists);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.stderr.includes('--method POST'), !scenario.tagExists);
+    assert.equal(result.stdout.includes('release create'), !scenario.releaseExists);
     assert.match(result.stdout, /release upload v0.2.0 led-hat-v0.2.0-android.apk SHA256SUMS-android.txt --clobber/);
     assert.match(result.stdout, /release edit v0.2.0 --draft=false --latest/);
     assert.match(readFileSync(join(root, 'SHA256SUMS-android.txt'), 'utf8'), /^[a-f0-9]{64}  led-hat-v0.2.0-android.apk\n$/);
   }
+  const mismatch = spawnSync('bash', ['-c', `
+    gh() {
+      if [[ "$1 $2" == "api repos/example/app/git/ref/tags/v0.2.0" ]]; then return 0; fi
+      if [[ "$1 $2" == "api repos/example/app/commits/v0.2.0" ]]; then
+        printf 'different-commit-sha\\n'
+        return 0
+      fi
+      printf 'unexpected publication request: %s\\n' "$*" >&2
+      exit 99
+    }
+    ${script}
+  `], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, RELEASE_TAG: 'v0.2.0', RELEASE_COMMIT: 'built-commit-sha',
+      GH_REPO: 'example/app' },
+  });
+  assert.equal(mismatch.status, 1);
+  assert.match(mismatch.stdout, /expected built-commit-sha/);
+  assert.doesNotMatch(mismatch.stdout, /release upload/);
 });
 
 test('rejects versions unsupported by native release metadata', () => {
