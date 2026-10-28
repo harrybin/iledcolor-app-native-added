@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
+import { connectHat, installFakeHat } from './hat';
 
 for (const feature of ['scan', 'sound']) {
   test(`tabs respond while ${feature} settings are still loading`, async ({ page }) => {
+    await installFakeHat(page);
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.addInitScript((name) => {
@@ -21,18 +23,21 @@ for (const feature of ['scan', 'sound']) {
       };
     }, feature);
     await page.goto('/');
+    await connectHat(page);
     await expect(page.locator(feature === 'scan' ? '#qr-template' : '#sound-language')).toBeAttached();
     const settings = page.getByRole('tab', { name: 'Settings', exact: true });
     await settings.click();
     await expect(settings).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('tabpanel', { name: 'Settings', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Presets', exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Presets', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Built-in presets', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Personal presets', exact: true })).toBeVisible();
     await page.getByRole('tab', { name: feature === 'scan' ? 'Sound' : 'Scan', exact: true }).click();
     await expect(page.locator(feature === 'scan' ? '#sound-language' : '#qr-template'))
       .toHaveValue(feature === 'scan' ? 'en-US' : 'Hi {name}!');
-    await page.getByRole('tab', { name: 'Connect', exact: true }).click();
-    await expect(page.locator('#c-kind')).toBeVisible();
-    await page.getByRole('tab', { name: 'Connect', exact: true }).focus();
+    await page.getByRole('tab', { name: 'Custom', exact: true }).click();
+    await expect(page.locator('#custom-text > summary')).toBeVisible();
+    await page.getByRole('tab', { name: 'Custom', exact: true }).focus();
     await page.keyboard.press('ArrowRight');
     await expect(page.getByRole('tab', { name: 'Scan', exact: true })).toBeFocused();
     expect(errors).toEqual([]);
