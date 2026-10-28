@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openCustomSection, connectHat, waitForServiceWorker } from './hat';
 
 const fonts = ['silkscreen', 'tiny5', 'press-start', 'dotgothic', 'bitcount', 'monaspace'];
 
@@ -16,7 +17,9 @@ async function pixels(page: Page, selector: string) {
 test('six distinct, crisp fonts have one-pixel spacing and match preview and mock uploads offline', async ({ page, context }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/#mock');
-  await expect(page.locator('#offline')).toHaveText('Ready for offline use', { timeout: 20_000 });
+  await connectHat(page);
+  await waitForServiceWorker(page);
+  await openCustomSection(page, 'text');
   await page.fill('#c-str', 'Hi!');
   await page.click('nav [data-tab=settings]');
   await expect(page.locator('#s-font option')).toHaveCount(6);
@@ -41,9 +44,8 @@ test('six distinct, crisp fonts have one-pixel spacing and match preview and moc
     expect(rows.lastIndexOf(true)).toBeLessThan(15);
     if (font === 'tiny5') expect(rows.lastIndexOf(true) - rows.indexOf(true) + 1).toBeGreaterThanOrEqual(10);
     samples.push(sample);
-    await page.click('nav [data-tab=connect]');
+    await page.click('nav [data-tab=custom]');
     await expect.poll(() => pixels(page, '#preview')).toEqual(sample);
-    if (font === fonts[0]) await page.click('#btn-connect');
     await expect(page.locator('#status')).toContainText('Ready');
     await page.click('#btn-send');
     await expect(page.locator('#send-note')).toHaveText('Upload confirmed.');
@@ -55,8 +57,9 @@ test('six distinct, crisp fonts have one-pixel spacing and match preview and moc
   // Ascenders and descenders of the full-height fonts reach the top and bottom LED rows.
   for (const [font, text] of [['bitcount', 'bjg'], ['monaspace', '$gj']]) {
     await page.selectOption('#s-font', font!);
-    await page.click('nav [data-tab=connect]');
-    await page.fill('#c-str', text!);
+    await page.click('nav [data-tab=custom]');
+    await openCustomSection(page, 'text');
+  await page.fill('#c-str', text!);
     await expect.poll(async () => {
       const image = await pixels(page, '#preview');
       return Array.from({ length: 16 }, (_, y) => image.slice(y * 32, (y + 1) * 32).includes('255,255,255')).every(Boolean);
@@ -66,6 +69,7 @@ test('six distinct, crisp fonts have one-pixel spacing and match preview and moc
 
   await context.setOffline(true);
   await page.reload();
+  await connectHat(page);
   await page.click('nav [data-tab=settings]');
   await expect(page.locator('#s-font')).toHaveValue('monaspace');
   for (const [index, font] of fonts.entries()) {
@@ -76,10 +80,12 @@ test('six distinct, crisp fonts have one-pixel spacing and match preview and moc
 
 test('emoji keep their full bitmap and two blank columns on both sides in every font', async ({ page }) => {
   await page.goto('/#mock');
+  await connectHat(page);
   const background = '0,0,0';
   const readText = async (text: string) => {
     const previous = await pixels(page, '#preview');
-    await page.fill('#c-str', text);
+    await openCustomSection(page, 'text');
+  await page.fill('#c-str', text);
     await expect.poll(() => pixels(page, '#preview')).not.toEqual(previous);
     return pixels(page, '#preview');
   };
@@ -87,7 +93,7 @@ test('emoji keep their full bitmap and two blank columns on both sides in every 
   for (const font of fonts) {
     await page.click('nav [data-tab=settings]');
     await page.selectOption('#s-font', font);
-    await page.click('nav [data-tab=connect]');
+    await page.click('nav [data-tab=custom]');
     const letter = await readText('i');
     const letterWidth = widthOf(letter);
     for (const emoji of ['💜', '👩‍💻']) {
@@ -105,7 +111,8 @@ test('emoji keep their full bitmap and two blank columns on both sides in every 
           for (let x = 0; x < letterWidth; x++) expected[y * 32 + letterOffset + x] = letter[y * 32 + x]!;
           for (let x = 0; x < emojiWidth; x++) expected[y * 32 + emojiOffset + x] = image[y * 32 + x]!;
         }
-        await page.fill('#c-str', emojiFirst ? `${emoji}i` : `i${emoji}`);
+        await openCustomSection(page, 'text');
+  await page.fill('#c-str', emojiFirst ? `${emoji}i` : `i${emoji}`);
         await expect.poll(() => pixels(page, '#preview')).toEqual(expected);
         await expect(page.locator('#c-warn')).toBeEmpty();
       }
@@ -115,6 +122,7 @@ test('emoji keep their full bitmap and two blank columns on both sides in every 
 
 test('old backups preserve the current font, excluded settings stay intact, invalid fonts fail atomically', async ({ page }) => {
   await page.goto('/#mock');
+  await connectHat(page);
   await page.click('nav [data-tab=settings]');
   await page.selectOption('#s-font', 'tiny5');
   const settings = {
@@ -139,6 +147,7 @@ test('old backups preserve the current font, excluded settings stay intact, inva
   await expect(page.locator('#s-font')).toHaveValue('tiny5');
   await expect(page.locator('#brightness')).toHaveValue('4');
   await page.reload();
+  await connectHat(page);
   await page.click('nav [data-tab=settings]');
   await expect(page.locator('#s-font')).toHaveValue('tiny5');
   await expect(page.locator('#brightness')).toHaveValue('4');
@@ -146,8 +155,7 @@ test('old backups preserve the current font, excluded settings stay intact, inva
 
 test('changing the global font refreshes running Approach content without restarting', async ({ page }) => {
   await page.goto('/#mock');
-  await page.click('#btn-connect');
-  await expect(page.locator('#status')).toContainText('Ready');
+  await connectHat(page);
   await page.click('nav [data-tab=approach]');
   await page.locator('[data-tier=solo][data-field=text]').fill('Hi!');
   await page.locator('[data-tier=solo][data-field=text]').dispatchEvent('change');
